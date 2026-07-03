@@ -396,38 +396,431 @@ Ein JSON-Datensatz kann ungefähr so aussehen:
 
 ---
 
-## Datenschutz und Sicherheit
+## Datenschutz, Sicherheit und Democharakter
 
-Dieses Projekt verarbeitet Gesundheitsdaten. Das sind besonders sensible Daten.
+Dieses Projekt verarbeitet potentiell **Gesundheitsdaten**. Das sind besonders sensible personenbezogene Daten. Genau deshalb ist dieses Repository ausdrücklich als **Demo, Lernprojekt und privater Technik-Prototyp** gedacht.
 
-Für eine private Demo reicht eine einfache Lösung technisch aus, für produktive Nutzung aber nicht.
+Die aktuelle Version speichert die Datensätze bewusst als einfache JSON-Dateien. Das ist für eine kleine Demo nachvollziehbar, aber für einen produktiven Betrieb mit echten Gesundheitsdaten nur eingeschränkt geeignet.
+
+### Was die Demo aktuell macht
 
 Aktuell vorhanden:
 
 - Adminpasswort mit `password_hash()` / `password_verify()`,
-- JSON-Dateien außerhalb direkter Anzeige über `.htaccess` geschützt,
+- JSON-Dateien im Ordner `ice_records/`,
+- Sperre des direkten JSON-Zugriffs per `.htaccess`,
 - Key-Validierung,
 - HTML-Ausgabe mit Escaping,
 - öffentliche Seiten mit `noindex`, `nofollow`, `noarchive`,
-- kein Listing aller Datensätze öffentlich,
-- keine Gesundheitsdaten direkt im QR-Code.
+- kein öffentliches Listing aller Datensätze,
+- keine Gesundheitsdaten direkt im QR-Code,
+- QR-Code enthält nur URL + Key.
 
-Für echte produktive Nutzung wären zusätzlich sinnvoll:
+Das reicht als einfache Technikdemo, weil man ohne Datenbank, Framework und komplexes Setup zeigen kann, wie ein QR-gestützter Notfallhinweis grundsätzlich funktionieren könnte.
 
-- HTTPS erzwingen,
-- stärkeres Rollen-/Benutzersystem,
-- Zwei-Faktor-Login für Admin,
-- Rate-Limiting,
-- Login-Bruteforce-Schutz,
-- serverseitige Logs mit Datenschutzkonzept,
-- Verschlüsselung ruhender Daten,
-- Backup-/Restore-Konzept,
-- Exportfunktion,
-- Einwilligungs- und Löschkonzept,
-- klare Verantwortlichkeit nach DSGVO,
-- Sicherheitsprüfung vor Veröffentlichung.
+### Was daran bewusst nicht produktionsreif ist
+
+Die Demo ist **nicht** als fertiges Produkt zu verstehen.
+
+Bewusste Grenzen:
+
+- JSON-Dateien sind keine saubere Datenbanklösung für mehrere Nutzer, Rollen, Rechte und Audit-Logs.
+- Ein Key im QR-Code ist praktisch ein Zugriffstoken. Wer den QR-Code hat, kann die öffentliche Notfallseite sehen.
+- Die öffentlichen Notfalldaten sind absichtlich niedrigschwellig abrufbar, weil der Notfallzugriff schnell funktionieren soll.
+- Es gibt keine echte Ende-zu-Ende-Verschlüsselung.
+- Es gibt keine revisionssichere Änderungsverfolgung.
+- Es gibt kein Rollenmodell für mehrere Admins.
+- Es gibt keine granulare Freigabe nach Datenkategorie.
+- Es gibt keine professionelle Datenschutz-Folgenabschätzung.
+- Es gibt keine medizinische oder rechtliche Zertifizierung.
+
+Für GitHub, Portfolio und Lernzwecke ist JSON okay. Für produktive Gesundheitsdaten wäre eine härtere Architektur notwendig.
 
 ---
+
+## Wie man das System produktiv absichern könnte
+
+Für einen echten Einsatz müsste das System deutlich erweitert werden. Die folgenden Punkte beschreiben eine mögliche Härtung.
+
+### 1. Datenbank statt JSON
+
+Für eine produktive Variante wäre eine relationale Datenbank sinnvoll, z. B. MySQL/MariaDB oder PostgreSQL.
+
+Mögliche Tabellen:
+
+```sql
+users
+ice_profiles
+ice_contacts
+ice_medications
+ice_allergies
+ice_operations
+ice_vaccinations
+ice_access_tokens
+ice_access_logs
+ice_audit_log
+```
+
+Vorteile gegenüber JSON:
+
+- bessere Rechteverwaltung,
+- saubere Beziehungen zwischen Personen, Kontakten und medizinischen Einträgen,
+- Transaktionen,
+- strukturierte Suche,
+- Audit-Log,
+- einfachere Backups,
+- bessere Migrationen,
+- weniger Risiko durch Dateirechte-Fehler.
+
+Wichtig: Bei SQL müssten alle Datenbankzugriffe über **Prepared Statements** laufen. Keine SQL-Strings aus Benutzereingaben zusammensetzen.
+
+Beispiel mit PDO:
+
+```php
+$stmt = $pdo->prepare('SELECT * FROM ice_profiles WHERE public_key = :key AND is_active = 1');
+$stmt->execute(['key' => $key]);
+$profile = $stmt->fetch();
+```
+
+### 2. CSRF-Schutz im Adminbereich
+
+Alle schreibenden Aktionen im Adminbereich brauchen CSRF-Schutz:
+
+- Anlegen,
+- Speichern,
+- Löschen,
+- Aktivieren/Deaktivieren,
+- Passwort ändern,
+- Export auslösen.
+
+Prinzip:
+
+```php
+$_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+```
+
+Im Formular:
+
+```html
+<input type="hidden" name="csrf_token" value="<?= htmlspecialchars($_SESSION['csrf_token']) ?>">
+```
+
+Beim Absenden:
+
+```php
+if (!hash_equals($_SESSION['csrf_token'] ?? '', $_POST['csrf_token'] ?? '')) {
+    http_response_code(403);
+    exit('Ungültiger CSRF-Token');
+}
+```
+
+Zusätzlich sinnvoll:
+
+- nur `POST` für schreibende Aktionen,
+- keine Löschaktionen per `GET`,
+- SameSite-Cookies,
+- erneute Bestätigung bei Löschen,
+- Session nach Login erneuern.
+
+### 3. Sichere Sessions und Cookies
+
+Für den Adminbereich sollten Session-Cookies gehärtet werden:
+
+```php
+session_set_cookie_params([
+    'lifetime' => 0,
+    'path' => '/ice/',
+    'secure' => true,
+    'httponly' => true,
+    'samesite' => 'Strict',
+]);
+
+session_start();
+session_regenerate_id(true);
+```
+
+Ziele:
+
+- Cookie nur über HTTPS,
+- kein Zugriff per JavaScript,
+- weniger Risiko durch Cross-Site-Anfragen,
+- Schutz gegen Session-Fixation.
+
+### 4. Login härten
+
+Die Demo nutzt ein einzelnes Adminpasswort. Für produktive Nutzung besser:
+
+- eigener Adminbenutzer,
+- kein Standardpasswort,
+- Passwort-Hashing mit Argon2id oder bcrypt,
+- optional Pepper außerhalb des Webroots,
+- Zwei-Faktor-Authentifizierung,
+- Rate-Limiting,
+- Login-Lockout nach Fehlversuchen,
+- Login-Log,
+- Session-Timeout,
+- Adminbereich nicht öffentlich indexierbar,
+- optional IP-Allowlist oder zusätzlicher HTTP-Basic-Schutz.
+
+Beispiel Passwort-Hash:
+
+```php
+$hash = password_hash($password, PASSWORD_ARGON2ID);
+```
+
+Fallback, falls Argon2id nicht verfügbar ist:
+
+```php
+$hash = password_hash($password, PASSWORD_BCRYPT, ['cost' => 12]);
+```
+
+### 5. Verschlüsselung ruhender Daten
+
+Für echte Gesundheitsdaten sollte man nicht nur den Zugriff sperren, sondern Daten auch ruhend verschlüsseln.
+
+Mögliche Varianten:
+
+#### Variante A: Anwendung verschlüsselt einzelne Felder
+
+Die Anwendung verschlüsselt sensible Felder vor dem Speichern:
+
+```php
+$ciphertext = sodium_crypto_secretbox($plaintext, $nonce, $key);
+```
+
+Vorteile:
+
+- Datenbank sieht nur Ciphertext,
+- auch bei Datenbankdump sind Inhalte nicht direkt lesbar.
+
+Nachteile:
+
+- Schlüsselmanagement wird kritisch,
+- Suche/Filterung auf verschlüsselten Feldern wird schwerer,
+- Backups brauchen ein Schlüsselkonzept.
+
+#### Variante B: MySQL/MariaDB mit verschlüsselten Feldern
+
+MySQL bietet Funktionen wie `AES_ENCRYPT()` und `AES_DECRYPT()`. Trotzdem sollte man genau prüfen, wo der Schlüssel liegt. Wenn der Schlüssel im selben PHP-Code oder direkt in SQL hart hinterlegt ist, ist der Schutz begrenzt.
+
+#### Variante C: Server-/Volume-Verschlüsselung
+
+Der Server oder das Hosting verschlüsselt Datenträger/Backups. Das schützt eher gegen Verlust von Datenträgern, aber nicht automatisch gegen kompromittierten Webspace oder auslesbaren PHP-Code.
+
+Wichtig ist immer das **Schlüsselmanagement**:
+
+- Schlüssel nicht im Webroot speichern,
+- Schlüssel nicht in Git committen,
+- `.env` oder Server-Secret verwenden,
+- Rotation planen,
+- Backup der Schlüssel getrennt sichern,
+- Zugriff auf Secrets minimal halten.
+
+### 6. Öffentliche Notfallseite: Minimaldaten und Stufenmodell
+
+Der Notfallzugriff muss schnell sein. Gleichzeitig sind Gesundheitsdaten sensibel. Ein sinnvolles Modell wäre daher zweistufig:
+
+#### Öffentlich per QR sichtbar
+
+- Name,
+- Geburtsjahr oder Alter statt vollständigem Geburtsdatum,
+- Notfallkontakt,
+- lebenswichtige Allergien,
+- wichtige Implantate,
+- Hinweis auf Patientenverfügung/Vorsorgevollmacht,
+- Kurznotizen für Rettungskräfte.
+
+#### Geschützt sichtbar
+
+- vollständiger Medikamentenplan,
+- Operationen,
+- Impfungen,
+- Diagnosen,
+- Dokumente,
+- Arztkontakte,
+- detaillierte Historie.
+
+Optional könnte der QR-Code nur ein Minimalprofil anzeigen und für Details eine zusätzliche PIN, TAN oder Freigabe verlangen. Für echte Rettungssituationen muss man aber sehr vorsichtig abwägen: Zu viel Schutz kann den Notfallnutzen zerstören.
+
+### 7. Zugriffstokens statt sprechender Keys
+
+Der QR-Key sollte kein Name, kein Geburtsdatum und kein erratbarer Wert sein.
+
+Gut:
+
+```text
+u4Ww8pQW6vC7b5kM3hY9dA
+```
+
+Schlecht:
+
+```text
+marcus-1988
+sam-kind
+anna-notfall
+```
+
+Produktiv sinnvoll:
+
+- mindestens 128 Bit Entropie,
+- zufällig erzeugt mit `random_bytes()`,
+- Token nur gehasht speichern,
+- Token rotierbar machen,
+- verlorene QR-Codes deaktivierbar machen,
+- optional Ablaufdatum oder Versionierung.
+
+Beispiel:
+
+```php
+$token = rtrim(strtr(base64_encode(random_bytes(32)), '+/', '-_'), '=');
+$tokenHash = hash('sha256', $token);
+```
+
+Öffentlich wird der Token genutzt, gespeichert wird nur der Hash.
+
+### 8. HTTP-Sicherheitsheader
+
+Sinnvolle Header:
+
+```php
+header('X-Frame-Options: DENY');
+header('X-Content-Type-Options: nosniff');
+header('Referrer-Policy: no-referrer');
+header("Content-Security-Policy: default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'");
+header('Permissions-Policy: geolocation=(), microphone=(), camera=()');
+```
+
+Für HTTPS:
+
+```php
+header('Strict-Transport-Security: max-age=31536000; includeSubDomains; preload');
+```
+
+HSTS nur aktivieren, wenn HTTPS sauber läuft und Subdomains wirklich vorbereitet sind.
+
+### 9. Dateisystem härten, falls JSON bleibt
+
+Wenn man bei JSON bleibt, dann mindestens:
+
+- `ice_records/` außerhalb des Webroots speichern,
+- keine direkten Downloads erlauben,
+- Dateinamen strikt validieren,
+- keine Pfade aus Benutzereingaben übernehmen,
+- Schreibrechte minimal halten,
+- atomar schreiben: erst temporäre Datei, dann `rename()`,
+- Datei-Locking mit `flock()`,
+- Backups verschlüsseln,
+- keine personenbezogenen Daten im Dateinamen.
+
+Beispiel für atomares Schreiben:
+
+```php
+$tmp = $file . '.tmp';
+file_put_contents($tmp, json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE), LOCK_EX);
+rename($tmp, $file);
+```
+
+### 10. Protokollierung ohne Datenschutz-Falle
+
+Logs sind wichtig, aber bei Gesundheitsdaten heikel.
+
+Sinnvoll loggen:
+
+- Zeitpunkt,
+- Aktion,
+- Admin-Benutzer,
+- Datensatz-ID,
+- Erfolg/Fehler.
+
+Nicht ungeprüft loggen:
+
+- vollständige Gesundheitsdaten,
+- Medikamente,
+- Diagnosen,
+- komplette JSON-Dumps,
+- komplette Zugriffstokens,
+- unnötige IP-Historien.
+
+Produktiv braucht man ein Lösch- und Aufbewahrungskonzept.
+
+### 11. Backups und Wiederherstellung
+
+Produktiv notwendig:
+
+- regelmäßige Backups,
+- verschlüsselte Backups,
+- getrennte Aufbewahrung von Daten und Schlüsseln,
+- Wiederherstellung testen,
+- Löschkonzept für alte Datensätze,
+- Versionierung bei versehentlicher Änderung.
+
+Ein Backup, das nie zurückgespielt getestet wurde, ist nur eine Hoffnung.
+
+### 12. DSGVO und Einwilligung
+
+Bei echten Gesundheitsdaten muss vorher geklärt werden:
+
+- Wer ist Verantwortlicher?
+- Welche Daten werden gespeichert?
+- Wer darf sie sehen?
+- Wie wird Einwilligung dokumentiert?
+- Wie werden Daten gelöscht?
+- Wie wird Auskunft erteilt?
+- Was passiert bei Datenpanne?
+- Wie wird der Zugriff im Notfall begründet?
+
+Für Familien/Privatgebrauch ist die Lage anders als bei öffentlichem Dienst oder gewerblichem Betrieb. Trotzdem sollte man bei Gesundheitsdaten grundsätzlich sparsam und vorsichtig arbeiten.
+
+---
+
+## Mögliche produktive Architektur
+
+Eine robustere Version könnte so aufgebaut sein:
+
+```text
+QR-Code
+  ↓
+öffentliche ICE-Seite mit Token
+  ↓
+Minimaldaten sichtbar
+  ↓
+optional: Detailfreigabe / PIN / Adminfreigabe
+  ↓
+MySQL/MariaDB mit verschlüsselten sensiblen Feldern
+  ↓
+Audit-Log + Backup + Rechtekonzept
+```
+
+Mögliche Komponenten:
+
+- PHP 8.x,
+- PDO,
+- MySQL/MariaDB,
+- CSRF-Token,
+- Argon2id-Passwort-Hashes,
+- 2FA für Admin,
+- verschlüsselte Felder,
+- Token-Hashing,
+- Audit-Log,
+- Backup-Export,
+- getrennte Konfiguration außerhalb des Webroots.
+
+---
+
+## Security-Quellen für eine spätere Härtung
+
+Hilfreiche Referenzen:
+
+- OWASP CSRF Prevention Cheat Sheet: https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html
+- OWASP SQL Injection Prevention Cheat Sheet: https://cheatsheetseries.owasp.org/cheatsheets/SQL_Injection_Prevention_Cheat_Sheet.html
+- OWASP Password Storage Cheat Sheet: https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html
+- OWASP Authentication Cheat Sheet: https://cheatsheetseries.owasp.org/cheatsheets/Authentication_Cheat_Sheet.html
+- OWASP Cryptographic Storage Cheat Sheet: https://cheatsheetseries.owasp.org/cheatsheets/Cryptographic_Storage_Cheat_Sheet.html
+- OWASP Key Management Cheat Sheet: https://cheatsheetseries.owasp.org/cheatsheets/Key_Management_Cheat_Sheet.html
+- PHP `setcookie()` / Cookie-Optionen: https://www.php.net/manual/en/function.setcookie.php
+- MDN Content Security Policy: https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/CSP
+- MDN X-Frame-Options: https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/X-Frame-Options
+- MySQL Encryption Functions: https://dev.mysql.com/doc/refman/8.4/en/encryption-functions.html
 
 ## Grenzen des Projekts
 
@@ -448,15 +841,48 @@ Es ist eine technische Demo, wie man mit einfachen Mitteln einen QR-gestützten 
 
 ## Warum JSON statt Datenbank?
 
-Für dieses private Demo-Projekt ist JSON bewusst gewählt:
+Für dieses private Demo-Projekt ist JSON bewusst gewählt. Es soll zeigen, wie die Grundidee funktioniert, ohne zuerst ein komplettes Datenbankmodell, Migrationen, Benutzerverwaltung und Deployment-Konzept bauen zu müssen.
+
+Vorteile für die Demo:
 
 - kein Datenbanksetup nötig,
-- leicht zu sichern,
 - leicht zu verstehen,
 - leicht auf einfachem Webspace zu betreiben,
-- passend für wenige Personen oder Familienmitglieder.
+- einfache Dateien pro Person,
+- gut für wenige private Testdatensätze,
+- gut als Lern- und Portfolio-Projekt.
 
-Für größere Nutzung wäre eine Datenbank sinnvoller, z. B. SQLite oder MySQL/MariaDB.
+Aber klar gesagt:
+
+> JSON ist hier eine Demo-Entscheidung, keine Empfehlung für produktive Gesundheitsdaten.
+
+Für echte Nutzung wären MySQL/MariaDB, PostgreSQL oder mindestens SQLite sinnvoller. Dann könnten Daten sauber normalisiert, Rechte abgebildet, Zugriffe protokolliert, Tokens gehasht und sensible Felder verschlüsselt werden.
+
+Ein möglicher Datenbankansatz:
+
+```sql
+CREATE TABLE ice_profiles (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    public_token_hash CHAR(64) NOT NULL UNIQUE,
+    display_name VARCHAR(120) NOT NULL,
+    birth_date DATE NULL,
+    blood_type VARCHAR(10) NULL,
+    is_active TINYINT(1) NOT NULL DEFAULT 1,
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL
+);
+
+CREATE TABLE ice_medications (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    profile_id INT NOT NULL,
+    medication_name VARCHAR(255) NOT NULL,
+    dosage VARCHAR(255) NULL,
+    notes TEXT NULL,
+    FOREIGN KEY (profile_id) REFERENCES ice_profiles(id) ON DELETE CASCADE
+);
+```
+
+Sensible Detailfelder könnten entweder anwendungsseitig oder datenbankseitig verschlüsselt werden. Für Passwortspeicherung gilt weiterhin: Passwörter nicht verschlüsseln, sondern langsam und sicher hashen.
 
 ---
 
